@@ -4,38 +4,45 @@ name: Release
 # This GitHub action creates a release when a tag that matches the pattern
 # "v*" (e.g. v0.1.0) is created.
 on:
-  push:
-    tags:
-      - 'v*'
+  release:
+    types:
+      - published
+  workflow_dispatch:
+    inputs:
+      RELEASE_VERSION:
+        required: true
+        type: string
 
-# Releases need permissions to read and write the repository contents.
-# GitHub considers creating releases and uploading assets as writing contents.
-permissions:
-  contents: write
+env:
+  DEPOT_TOKEN: ${{ secrets.DEPOT_TOKEN }}
+  RELEASE_VERSION: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.RELEASE_VERSION || '0.0.0' }}
 
 jobs:
-  goreleaser:
-    runs-on: ubuntu-latest
+  release:
+    name: Release provider
+    runs-on: leafblower-k8s-amd64
+    container:
+      image: registry.services.helixer.io/helixer/depot-cli:latest
+      credentials:
+        username: ${{ secrets.DOCKER_USERNAME_HARBOR_IO }}
+        password: ${{ secrets.DOCKER_PASSWORD_HARBOR_IO }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup go
+        uses: actions/setup-go@v5
         with:
-          # Allow goreleaser to access older tag information.
-          fetch-depth: 0
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: 'go.mod'
-          cache: true
+          go-version-file: "go.mod"
+
       - name: Import GPG key
-        uses: crazy-max/ghaction-import-gpg@v6
-        id: import_gpg
-        with:
-          gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
-          passphrase: ${{ secrets.GPG_PASSPHRASE }}
+        run: echo "${{ secrets.GPG_SECRET_KEY }}" | base64 -d | gpg --import
+
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:
-          args: release --clean
-        env:
-          # GitHub sets the GITHUB_TOKEN secret automatically.
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GPG_FINGERPRINT: ${{ steps.import_gpg.outputs.fingerprint }}
+          args: build --clean --snapshot
+
+      - name: Publish provider
+        run: |
+          make publish key=sign@helixer.io version=${{ env.RELEASE_VERSION }}
